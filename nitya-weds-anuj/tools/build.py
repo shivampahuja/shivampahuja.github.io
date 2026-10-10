@@ -17,8 +17,12 @@ DESCRIPTION = ('11 and 12 December 2026, Fortune Select Forest Hill, Kasauli. '
 ap = argparse.ArgumentParser()
 ap.add_argument('src'); ap.add_argument('out')
 ap.add_argument('--endpoint', default='')
+ap.add_argument('--fields', default='', help='JSON mapping of posted field names to the endpoint\'s names, '
+                'e.g. {"name":"entry.123","submittedAt":""} (empty string drops a field); Google Forms needs this')
 ap.add_argument('--base', default='', help='absolute site URL, used for og:image and og:url')
 a = ap.parse_args()
+if a.fields:
+    json.loads(a.fields)  # must be valid JSON
 
 text = open(a.src, encoding='utf-8').read()
 lines = text.split('\n')
@@ -39,8 +43,22 @@ assert m, 'data-props not found'
 props = json.loads(html.unescape(m.group(1)))
 assert 'rsvpEndpoint' in props, 'rsvpEndpoint prop missing'
 props['rsvpEndpoint']['default'] = a.endpoint
+props['rsvpFields'] = {'editor': 'text', 'default': a.fields, 'tsType': 'string', 'section': 'RSVP'}
 new_attr = html.escape(json.dumps(props, separators=(',', ':')), quote=True)
 tpl = tpl[:m.start(1)] + new_attr + tpl[m.end(1):]
+
+# submit(): post the fields under the names the endpoint expects (rsvpFields), dropping any mapped to ''
+OLD_SUBMIT = """          const body = new URLSearchParams({ name: s.name, attending: s.going ? 'Yes' : 'No', guests: s.going ? s.guests : 0,
+            events: s.going ? Object.keys(s.ev).filter(k => s.ev[k]).join(', ') : '', note: s.note, submittedAt: new Date().toISOString() });
+          fetch(url, { method: 'POST', mode: 'no-cors', body }).catch(() => {});"""
+NEW_SUBMIT = """          const data = { name: s.name, attending: s.going ? 'Yes' : 'No', guests: s.going ? s.guests : 0,
+            events: s.going ? Object.keys(s.ev).filter(k => s.ev[k]).join(', ') : '', note: s.note, submittedAt: new Date().toISOString() };
+          let map = {}; try { map = JSON.parse(this.props.rsvpFields || '{}') || {}; } catch (e) {}
+          const body = new URLSearchParams();
+          Object.keys(data).forEach(k => { const f = k in map ? map[k] : k; if (f) body.append(f, data[k]); });
+          fetch(url, { method: 'POST', mode: 'no-cors', body }).catch(() => {});"""
+assert tpl.count(OLD_SUBMIT) == 1, 'submit() code not found in template'
+tpl = tpl.replace(OLD_SUBMIT, NEW_SUBMIT)
 
 # the template rides inside a <script> element, so a literal "</" would end it early;
 # the exporter escapes it as </ and so do we
